@@ -1,0 +1,215 @@
+#! /usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# Use python.exe (3.6.6) from FreeCAD installaion path...other versions not compatible!
+import sys, os, csv
+import FreeCAD, FreeCADGui, Part, TechDraw, TechDrawGui
+from PySide import QtCore, QtGui
+# Install PyPDF2 package first via <FreeCAD_Dir>python -m pip install PyPDF2
+try:
+	from PyPDF2 import PdfFileMerger
+except:
+	errorDialog("Package PyPDF2 missing.\nPlase install package with <FreeCAD_Dir> ./python(.exe) -m pip install PyPDF2")
+ 
+# Simple error dialog
+def errorDialog(msg):
+	diag = QtGui.QMessageBox(QtGui.QMessageBox.Critical, 'Error', msg)
+	diag.setWindowModality(QtCore.Qt.ApplicationModal)
+	diag.exec_()
+
+# Simple information dialog
+def infoDialog(msg):
+	diag = QtGui.QMessageBox(QtGui.QMessageBox.Information, 'Information', msg)
+	diag.setWindowModality(QtCore.Qt.ApplicationModal)
+	diag.exec_()
+
+# Simple confirm dialog for selected directories
+def confirmDialog(msg):
+	diag = QtGui.QMessageBox(QtGui.QMessageBox.Question, 'Confirm selection', msg, QtGui.QMessageBox.Yes | QtGui.QMessageBox.No)
+	diag.setWindowModality(QtCore.Qt.ApplicationModal)
+	returnValue = diag.exec_()
+	if returnValue == QtGui.QMessageBox.Yes:
+		return True
+
+	return False
+
+# File chooser dialog for directories only
+def directoryChooserDialog(dialogTitle, defaultDir):
+	folderPath = QtGui.QFileDialog.getExistingDirectory(None, dialogTitle, defaultDir, QtGui.QFileDialog.ShowDirsOnly)	
+	try:
+		if folderPath != "":
+			return folderPath
+	except:
+		errorDialog("Cannot open directory")
+		return ""
+		
+
+def RepresentsInt(s):
+	try: 
+		int(s)
+		return True
+	except ValueError:
+		return False
+
+def ExportTechDrawBomAndPdf(sourcePath, pdfExportPath):
+
+	# empty array for CSV table	
+	csvTable = []
+	# search key	/ default values for TechDraw page
+	exportDrawingKeys = ["DN", "PN", "SHEET", "REVISION", "PM", "TITLELINE-1", "TITLELINE-2", "TITLELINE-3", "DATE"]
+	exportDrawingKeysDefaults = ["DN", "PN", "SHEET", "REV A", "PM", "TITLELINE-1", "TITLELINE-2", "TITLELINE-3", "DATE"]
+	
+	# list all FreeCAD model files in working directory given by sourcePath
+	files = [f for f in os.listdir(sourcePath) if f.endswith(".FCStd")]
+	filesCount = len(files)
+	if filesCount == 0:
+		errorDialog("No FreeCAD models found")
+		exit()
+
+	currentFileIndex = 0
+
+	# show some progress dialog (sometimes seems to stuck, but still running)
+	progressDialog = QtGui.QProgressDialog("", "Cancel", 0, filesCount+1, None)
+	label = QtGui.QLabel("Exporting files...")
+	label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+	progressDialog.setLabel(label)
+	progressDialog.setWindowModality(QtCore.Qt.ApplicationModal)
+	progressDialog.show()
+	progressDialog.setValue(0)
+	
+	for f in files:
+		if progressDialog.wasCanceled():
+		        break
+
+		# generate full / absolute path of file
+		fullPath = os.path.abspath(os.path.join(sourcePath, f))
+		FreeCAD.Console.PrintMessage("File found: " +  fullPath + "\n")
+		
+		# drawing pages that combined to one document (bundle)
+		exportedpdfsPerFile = []
+		bundleFileName = ""
+
+		currentFileIndex += 1
+		progressDialog.setValue(currentFileIndex)
+		
+		if FreeCAD.ActiveDocument is not None:
+			FreeCAD.closeDocument(FreeCAD.ActiveDocument.Name)
+
+		progressDialog.setLabelText("Opening file " + str(currentFileIndex) + " of " + str(filesCount) + "\n" + fullPath + "\n")
+
+		doc = FreeCAD.openDocument(fullPath)
+		objects = doc.Objects
+		for ob in objects:
+			# Only getting TechDraw information
+			if ob.TypeId == "TechDraw::DrawPage":
+				progressDialog.setLabelText("Exporting file " + str(currentFileIndex) + " of " + str(filesCount) + "\n" + fullPath + "\n" + ob.Name)				
+				# Important: DrawPage must be shown before exporting !!!
+				ob.ViewObject.show()
+				# Getting text field content, one of
+				# DN = Document Number
+				# PN = Part Number
+				# REVISION = Revision
+				# SCALE = Scale
+				# DATE = Date of change
+				# PM = Part Material
+				# SHEET = Sheet Number
+				# TITLELINE-[1-3] = Title lines 1 to 3
+				# SIZE = Paper Size
+				# TOLERANCE = Unit Tolerance
+				# AUTHOR_NAME = Name of document author
+				texts = ob.Template.EditableTexts.copy()
+				tableRow = []
+				# search for keys and add to single table row
+				for i in range(len(exportDrawingKeys)):
+					if texts[exportDrawingKeys[i]] != exportDrawingKeysDefaults[i] and texts[exportDrawingKeys[i]]:
+						tableRow.append(texts[exportDrawingKeys[i]])
+					else:
+						tableRow.append("")
+				# END for keys				
+				# add only valid document numbers to CSV table
+				if texts["DN"] != "DN" and texts["DN"]:
+					# document name should always have this structure:
+					# <project_id>-<revision>-<part_number>-<sheet_number>
+					# e.g DN = "0001-A-001-01"
+					csvTable.append(tableRow)
+					# Export PDF file per drawing
+					exportPdfFileName = pdfExportPath + "/" + texts["DN"] + ".pdf"
+					FreeCAD.Console.PrintMessage("PDF storage path: " + exportPdfFileName+ "\n")
+					TechDrawGui.exportPageAsPdf(ob, exportPdfFileName)
+					# add single PDF file path to bundle
+					exportedpdfsPerFile.append(exportPdfFileName)
+					# generating bundle name with following format:
+					# <project_id>-<revision>-<part_number>
+					bundleFileName = texts["DN"].rsplit('-',1)[0]
+				# END if DN
+				# if all pages exported, create bundle per object (SHEET have format "1 of 3")
+				if  len(exportedpdfsPerFile) == int(texts["SHEET"].split(' ')[2]):
+					exportedpdfsPerFile.sort()
+					merger = PdfFileMerger()
+			
+					for pdf in exportedpdfsPerFile:
+						merger.append(pdf)
+				
+					merger.write(pdfExportPath + "/" + bundleFileName + ".pdf")
+					merger.close()
+
+					# append bundle file to CSV table
+					bundleRow = [bundleFileName, texts["PN"], "All", texts["REVISION"], texts["PM"], texts["TITLELINE-1"], texts["TITLELINE-2"], "All", ""]
+					csvTable.append(bundleRow)
+		
+					exportedpdfsPerFile.clear()
+					bundleFileName = ""
+				# END if bundle
+			# END if TypeId
+		# END for objects
+	# END for files
+	
+	if FreeCAD.ActiveDocument is not None:
+		FreeCAD.closeDocument(FreeCAD.ActiveDocument.Name)
+	
+	progressDialog.setLabelText("Generating drawing index...\n")
+	# Sort table by first column before writing to file
+	csvTable.sort()
+	# Insert table header after sorting
+	tableFirstRow = ["Drawing Number", "Part Number", "Sheet", "Revision", "Material", "Project Name", "Part Description", "View", "Drawing Date"]
+	csvTable.insert(0, tableFirstRow)
+	
+	# Write temp table into CSV file
+	with open(pdfExportPath + "/DrawingIndex.csv", "w") as csvfile:
+		filewriter = csv.writer(csvfile, delimiter=';', lineterminator='\n')
+		filewriter.writerows(csvTable)
+
+	progressDialog.setValue(filesCount+1)
+	progressDialog.setLabelText("Finisched.\n")
+
+	infoDialog("Exporting TechDraw to PDF including document index finished.")
+
+# Default file chooser dialog path is users HOME
+defaultPath = os.path.expanduser('~')
+
+# If a model is already opened, take this path
+if FreeCAD.ActiveDocument is not None:
+	defaultPath = os.path.dirname(FreeCAD.ActiveDocument.FileName)
+
+# Request project working directory
+workingDir = directoryChooserDialog("Choose working directory", defaultPath)
+if not workingDir:
+	errorDialog("No working dir selected. Exit")
+	exit()
+
+# Request export directory for PDF files and drawing index
+exportDir = directoryChooserDialog("Choose PDF export directory", workingDir)
+if not exportDir:
+	errorDialog("No export dir selected. Exit")
+	exit()
+
+# Confirm selected directories
+accepted = confirmDialog("Selected working directory: " + workingDir + "\n\nSelected PDF export directory: " + exportDir + "\n\nDo you want to continue?")
+if accepted == False:
+	exit()
+
+# Execute export and throw any exception into error dialog
+try:
+	ExportTechDrawBomAndPdf(workingDir, exportDir)
+except Exception as e:
+	errorDialog("Export failed.\n" + str(e))
