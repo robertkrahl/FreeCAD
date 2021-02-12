@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 # Use python.exe (3.6.6) from FreeCAD installaion path...other versions not compatible!
-import sys, os, csv
+import sys, os, csv, itertools
 import FreeCAD, FreeCADGui, Part, TechDraw, TechDrawGui
 from PySide import QtCore, QtGui
 # Install PyPDF2 package first via <FreeCAD_Dir>python -m pip install PyPDF2
@@ -76,7 +76,10 @@ def ExportTechDrawBomAndPdf(sourcePath, pdfExportPath):
 	progressDialog.setWindowModality(QtCore.Qt.ApplicationModal)
 	progressDialog.show()
 	progressDialog.setValue(0)
-	
+
+	# list of all exported pdf files	
+	exportedpdfsPerFile = []
+
 	for f in files:
 		if progressDialog.wasCanceled():
 		        break
@@ -85,10 +88,6 @@ def ExportTechDrawBomAndPdf(sourcePath, pdfExportPath):
 		fullPath = os.path.abspath(os.path.join(sourcePath, f))
 		FreeCAD.Console.PrintMessage("File found: " +  fullPath + "\n")
 		
-		# drawing pages that combined to one document (bundle)
-		exportedpdfsPerFile = []
-		bundleFileName = ""
-
 		currentFileIndex += 1
 		progressDialog.setValue(currentFileIndex)
 		
@@ -138,35 +137,57 @@ def ExportTechDrawBomAndPdf(sourcePath, pdfExportPath):
 					TechDrawGui.exportPageAsPdf(ob, exportPdfFileName)
 					# add single PDF file path to bundle
 					exportedpdfsPerFile.append(exportPdfFileName)
-					# generating bundle name with following format:
-					# <project_id>-<revision>-<part_number>
-					bundleFileName = texts["DN"].rsplit('-',1)[0]
 				# END if DN
-				# if all pages exported, create bundle per object (SHEET have format "1 of 3")
-				if  len(exportedpdfsPerFile) == int(texts["SHEET"].split(' ')[2]):
-					exportedpdfsPerFile.sort()
-					merger = PdfFileMerger()
-			
-					for pdf in exportedpdfsPerFile:
-						merger.append(pdf)
-				
-					merger.write(pdfExportPath + "/" + bundleFileName + ".pdf")
-					merger.close()
-
-					# append bundle file to CSV table
-					bundleRow = [bundleFileName, texts["PN"], "All", texts["REVISION"], texts["PM"], texts["TITLELINE-1"], texts["TITLELINE-2"], "All", ""]
-					csvTable.append(bundleRow)
-		
-					exportedpdfsPerFile.clear()
-					bundleFileName = ""
-				# END if bundle
 			# END if TypeId
 		# END for objects
 	# END for files
 	
 	if FreeCAD.ActiveDocument is not None:
 		FreeCAD.closeDocument(FreeCAD.ActiveDocument.Name)
-	
+
+	partIndex = 0
+	lastPartIndex = 0
+	bundlePdf = []
+	bundlePdfList = []
+	# creating bundle based on file name (drawing number)
+	if len(exportedpdfsPerFile) > 0:
+		# important to sort list befor bundle creation
+		exportedpdfsPerFile.sort()
+		for index, pdf in enumerate(exportedpdfsPerFile):
+			# getting part number of filename with format <project_id>-<revision>-<part_number>-<sheet>.pdf
+			if RepresentsInt(os.path.basename(pdf).split('-')[2]):
+				partIndex = os.path.basename(pdf).split('-')[2]
+			# END index int check
+			if partIndex != lastPartIndex and index != 0:
+				bundlePdfList.append(bundlePdf)
+				bundlePdf = []
+			# END if index mismatch
+			
+			lastPartIndex = partIndex
+			bundlePdf.append(pdf)
+		# END for pdf files list
+
+		# add the last bundle after loop ends
+		bundlePdfList.append(bundlePdf)
+		
+		if len(bundlePdfList) > 0:
+			for bundle in bundlePdfList:
+				bundleFileName = os.path.basename(bundle[0]).rsplit('-',1)[0]
+				merger = PdfFileMerger()
+			
+				for pdf in bundle:
+					merger.append(pdf)
+			
+				merger.write(pdfExportPath + "/" + bundleFileName + ".pdf")
+				merger.close()
+
+				# append bundle file to CSV table
+				bundleRow = [bundleFileName, os.path.basename(pdf).split('-')[2], "All",  os.path.basename(pdf).split('-')[1],"", "", "", "", ""]
+				csvTable.append(bundleRow)
+			# END for bundlePdfList
+		# END if bundle list len
+	# END if pdf files len
+		
 	progressDialog.setLabelText("Generating drawing index...\n")
 	# Sort table by first column before writing to file
 	csvTable.sort()
