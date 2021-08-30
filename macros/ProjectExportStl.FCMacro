@@ -1,0 +1,148 @@
+#! /usr/bin/env python
+# -*- coding: utf-8 -*-
+
+# Use python.exe (3.6.6) from FreeCAD installaion path...other versions not compatible!
+import sys, os, csv
+import FreeCAD, FreeCADGui, Part, Mesh
+from PySide import QtCore, QtGui
+ 
+# Simple error dialog
+def errorDialog(msg):
+	diag = QtGui.QMessageBox(QtGui.QMessageBox.Critical, 'Error', msg)
+	diag.setWindowModality(QtCore.Qt.ApplicationModal)
+	diag.exec_()
+
+# Simple information dialog
+def infoDialog(msg):
+	diag = QtGui.QMessageBox(QtGui.QMessageBox.Information, 'Information', msg)
+	diag.setWindowModality(QtCore.Qt.ApplicationModal)
+	diag.exec_()
+
+# Simple confirm dialog for selected directories
+def confirmDialog(msg):
+	diag = QtGui.QMessageBox(QtGui.QMessageBox.Question, 'Confirm selection', msg, QtGui.QMessageBox.Yes | QtGui.QMessageBox.No)
+	diag.setWindowModality(QtCore.Qt.ApplicationModal)
+	returnValue = diag.exec_()
+	if returnValue == QtGui.QMessageBox.Yes:
+		return True
+
+	return False
+
+# File chooser dialog for directories only
+def directoryChooserDialog(dialogTitle, defaultDir):
+	folderPath = QtGui.QFileDialog.getExistingDirectory(None, dialogTitle, defaultDir, QtGui.QFileDialog.ShowDirsOnly)	
+	try:
+		if folderPath != "":
+			return folderPath
+	except:
+		errorDialog("Cannot open directory")
+		return ""
+		
+def ExportBodyToStl(sourcePath, stlExportPath):
+
+	# List all FreeCAD model files in working directory given by sourcePath
+	files = [f for f in os.listdir(sourcePath) if f.endswith(".FCStd")]
+	filesCount = len(files)
+	if filesCount == 0:
+		errorDialog("No FreeCAD models found")
+		exit()
+
+	currentFileIndex = 0
+	progressDialog = QtGui.QProgressDialog("", "Cancel", 0, filesCount+1, None)
+	label = QtGui.QLabel("Exporting files...")
+	label.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+	progressDialog.setLabel(label)
+	progressDialog.setWindowModality(QtCore.Qt.ApplicationModal)
+	progressDialog.show()
+	progressDialog.setValue(0)
+	
+	for f in files:
+		if progressDialog.wasCanceled():
+		        break
+
+		# Generate full / absolute path of file
+		fullPath = os.path.abspath(os.path.join(sourcePath, f))
+		FreeCAD.Console.PrintMessage("File found: " +  fullPath + "\n")
+		
+		currentFileIndex += 1
+		progressDialog.setValue(currentFileIndex)
+		
+		if FreeCAD.ActiveDocument is not None:
+			FreeCAD.closeDocument(FreeCAD.ActiveDocument.Name)
+
+		progressDialog.setLabelText("Opening file " + str(currentFileIndex) + " of " + str(filesCount) + "\n" + fullPath + "\n")
+		doc = FreeCAD.openDocument(fullPath)
+
+		exportBodyObject = None
+		exportFlag = False
+		objects = doc.Objects
+		for ob in objects:
+			# Only getting body to export STL
+			if ob.TypeId == "PartDesign::Body":
+				exportFlag = False
+				progressDialog.setLabelText("Exporting file " + str(currentFileIndex) + " of " + str(filesCount) + "\n" + fullPath + "\n" + ob.Label)				
+				# Important: Body must be shown before exporting !!!
+				ob.ViewObject.show()
+				exportBodyObject = ob
+			# END if TypeId
+			# Getting document name per body / drawing if available
+			if ob.TypeId == "TechDraw::DrawPage":
+				# Skip if body already exported
+				if exportFlag == True:
+					continue
+				# Important: DrawPage must be shown before exporting !!!
+				ob.ViewObject.show()
+				texts = ob.Template.EditableTexts.copy()
+
+				if texts["DN"] != "DN" and texts["DN"]:
+					if exportBodyObject is not None:
+						# Generating bundle name with following format:
+						# <project_id>-<revision>-<part_number>
+						bundleFileName = texts["DN"].rsplit('-',1)[0]
+						# Export STL if document name and body object is given
+						exportStlFileName = stlExportPath + "/"  + bundleFileName + ".stl"
+						FreeCAD.Console.PrintMessage("STL storage path: " + exportStlFileName + "\n")
+						Mesh.export([exportBodyObject], exportStlFileName)
+						exportFlag = True
+					# END if body
+				# END if DN
+		# END for objects
+	# END fo files
+	
+	if FreeCAD.ActiveDocument is not None:
+		FreeCAD.closeDocument(FreeCAD.ActiveDocument.Name)
+	
+	progressDialog.setValue(filesCount+1)
+	progressDialog.setLabelText("Finisched.\n")
+
+	infoDialog("Exporting Body to STL finished.")
+
+# Default dialog path is users HOME
+defaultPath = os.path.expanduser('~')
+
+# If a model is already opened, take this path
+if FreeCAD.ActiveDocument is not None:
+	defaultPath = os.path.dirname(FreeCAD.ActiveDocument.FileName)
+
+# Request project working directory
+workingDir = directoryChooserDialog("Choose working directory", defaultPath)
+if not workingDir:
+	errorDialog("No working dir selected. Exit")
+	exit()
+
+# Request export directory for PDF files and drawing index
+exportDir = directoryChooserDialog("Choose STL export directory", workingDir)
+if not exportDir:
+	errorDialog("No export dir selected. Exit")
+	exit()
+
+# Confirm selected directories
+accepted = confirmDialog("Selected working directory: " + workingDir + "\n\nSelected STL export directory: " + exportDir + "\n\nDo you want to continue?")
+if accepted == False:
+	exit()
+
+# Execute export and throw any exception into error dialog
+try:
+	ExportBodyToStl(workingDir, exportDir)
+except Exception as e:
+	errorDialog("Export failed.\n" + str(e))
